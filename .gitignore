@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_tmp/
+.env
+*.Rhistory
+*.RData
+diagnostico_output/
+*.egg-info/
+dist/
+build/
