@@ -17,7 +17,11 @@ class LLMRequestError(RuntimeError):
 
 class LLMClient(ABC):
     @abstractmethod
-    def chat(self, messages: list[dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        generation_options: dict[str, Any] | None = None,
+    ) -> str:
         ...
 
 
@@ -29,10 +33,14 @@ class GeminiClient(LLMClient):
     ) -> None:
         load_dotenv()
         self.api_key = api_key or os.environ["GEMINI_API_KEY"]
-        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
+        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
 
-    def chat(self, messages: list[dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        generation_options: dict[str, Any] | None = None,
+    ) -> str:
         url = (
             f"{self.base_url}/models/{self.model}:generateContent"
             f"?key={self.api_key}"
@@ -46,6 +54,14 @@ class GeminiClient(LLMClient):
                 for message in messages
             ]
         }
+        if generation_options is not None:
+            generation_config: dict[str, Any] = {}
+            if "temperature" in generation_options:
+                generation_config["temperature"] = generation_options["temperature"]
+            if "num_predict" in generation_options:
+                generation_config["maxOutputTokens"] = generation_options["num_predict"]
+            if generation_config:
+                payload["generationConfig"] = generation_config
 
         data = self._post(url, payload)
         try:
@@ -81,7 +97,11 @@ class DeepSeekClient(LLMClient):
             "https://api.deepseek.com/chat/completions",
         )
 
-    def chat(self, messages: list[dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        generation_options: dict[str, Any] | None = None,
+    ) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -90,6 +110,11 @@ class DeepSeekClient(LLMClient):
             "model": self.model,
             "messages": messages,
         }
+        if generation_options is not None:
+            if "temperature" in generation_options:
+                payload["temperature"] = generation_options["temperature"]
+            if "num_predict" in generation_options:
+                payload["max_tokens"] = generation_options["num_predict"]
 
         try:
             response = requests.post(
@@ -122,12 +147,18 @@ class OllamaClient(LLMClient):
         self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
         self.timeout = timeout or int(os.environ.get("OLLAMA_TIMEOUT_SECONDS", "120"))
 
-    def chat(self, messages: list[dict[str, str]]) -> str:
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        generation_options: dict[str, Any] | None = None,
+    ) -> str:
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
         }
+        if generation_options is not None:
+            payload["options"] = generation_options
 
         try:
             response = requests.post(

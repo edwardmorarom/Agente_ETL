@@ -31,7 +31,10 @@ class PipelineExplainer:
                 "content": (
                     "Eres un asistente que explica en espanol claro y sencillo "
                     "los resultados de un pipeline de imputacion de datos "
-                    "faltantes a alguien que puede no ser experto en estadistica."
+                    "faltantes. No te limites a reportar los numeros: razona "
+                    "sobre que implica cada resultado. Si un supuesto estadistico "
+                    "no se cumple, explica el riesgo practico que eso representa "
+                    "para las conclusiones del usuario, no solo que 'no se cumplio'."
                 ),
             },
             {
@@ -40,7 +43,10 @@ class PipelineExplainer:
             },
         ]
 
-        response = self.client.chat(messages)
+        response = self.client.chat(
+            messages,
+            generation_options={"temperature": 0.2, "num_predict": 400},
+        )
         self.history.extend(
             [
                 messages[0],
@@ -54,8 +60,14 @@ class PipelineExplainer:
         if not self.history:
             self.explain()
 
+        if len(self.history) > 12:
+            self.history = self.history[:2] + self.history[-8:]
+
         self.history.append({"role": "user", "content": question})
-        response = self.client.chat(self.history)
+        response = self.client.chat(
+            self.history,
+            generation_options={"temperature": 0.4, "num_predict": 350},
+        )
         self.history.append({"role": "assistant", "content": response})
         return response
 

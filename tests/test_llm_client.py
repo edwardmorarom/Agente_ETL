@@ -6,7 +6,13 @@ import pytest
 import requests
 
 import llm.client as client_module
-from llm.client import LLMRequestError, OllamaClient, get_llm_client
+from llm.client import (
+    DeepSeekClient,
+    GeminiClient,
+    LLMRequestError,
+    OllamaClient,
+    get_llm_client,
+)
 
 
 class FakeResponse:
@@ -48,6 +54,76 @@ def test_ollama_client_posts_chat_payload(monkeypatch: pytest.MonkeyPatch) -> No
         "stream": False,
     }
     assert seen["timeout"] == 120
+
+
+def test_ollama_client_adds_generation_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_post(
+        url: str,
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeResponse:
+        seen["json"] = json
+        return FakeResponse({"message": {"content": "respuesta local"}})
+
+    monkeypatch.setattr(client_module.requests, "post", fake_post)
+
+    OllamaClient(base_url="http://localhost:11434", model="llama-test").chat(
+        [{"role": "user", "content": "Hola"}],
+        generation_options={"temperature": 0.2, "num_predict": 400},
+    )
+
+    assert seen["json"]["options"] == {"temperature": 0.2, "num_predict": 400}
+
+
+def test_gemini_client_maps_generation_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_post(
+        url: str,
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeResponse:
+        seen["json"] = json
+        return FakeResponse(
+            {"candidates": [{"content": {"parts": [{"text": "respuesta"}]}}]}
+        )
+
+    monkeypatch.setattr(client_module.requests, "post", fake_post)
+
+    GeminiClient(api_key="key", model="gemini-test").chat(
+        [{"role": "user", "content": "Hola"}],
+        generation_options={"temperature": 0.2, "num_predict": 400},
+    )
+
+    assert seen["json"]["generationConfig"] == {
+        "temperature": 0.2,
+        "maxOutputTokens": 400,
+    }
+
+
+def test_deepseek_client_maps_generation_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_post(
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        timeout: int,
+    ) -> FakeResponse:
+        seen["json"] = json
+        return FakeResponse({"choices": [{"message": {"content": "respuesta"}}]})
+
+    monkeypatch.setattr(client_module.requests, "post", fake_post)
+
+    DeepSeekClient(api_key="key", model="deepseek-test").chat(
+        [{"role": "user", "content": "Hola"}],
+        generation_options={"temperature": 0.4, "num_predict": 350},
+    )
+
+    assert seen["json"]["temperature"] == 0.4
+    assert seen["json"]["max_tokens"] == 350
 
 
 def test_ollama_client_uses_environment(monkeypatch: pytest.MonkeyPatch) -> None:
