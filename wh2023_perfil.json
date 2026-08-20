@@ -1,0 +1,113 @@
+{
+  "n_rows": 138,
+  "n_columns": 10,
+  "total_missing_cells": 30,
+  "pct_missing_overall": 2.17,
+  "columns": {
+    "Country": {
+      "inferred_type": "text",
+      "pandas_dtype": "str",
+      "n_missing": 0,
+      "pct_missing": 0.0,
+      "n_unique": 138
+    },
+    "Ladder": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 0,
+      "pct_missing": 0.0,
+      "n_unique": 138,
+      "min": 1.44590854644775,
+      "max": 7.69892930984497,
+      "mean": 5.6208109510117685
+    },
+    "LGDP": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 9,
+      "pct_missing": 6.52,
+      "n_unique": 128,
+      "min": 7.07586193084717,
+      "max": 11.6755876541138,
+      "mean": 9.516661795534832
+    },
+    "Support": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 0,
+      "pct_missing": 0.0,
+      "n_unique": 138,
+      "min": 0.368478119373322,
+      "max": 0.978788912296295,
+      "mean": 0.7909876064977784
+    },
+    "Expectancy": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 3,
+      "pct_missing": 2.17,
+      "n_unique": 96,
+      "min": 52.2000007629395,
+      "max": 74.5999984741211,
+      "mean": 65.18814790513781
+    },
+    "Freedom": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 2,
+      "pct_missing": 1.45,
+      "n_unique": 136,
+      "min": 0.228301197290421,
+      "max": 0.964831709861755,
+      "mean": 0.790262986193685
+    },
+    "Generosity": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 9,
+      "pct_missing": 6.52,
+      "n_unique": 129,
+      "min": -0.268210500478745,
+      "max": 0.589554369449615,
+      "mean": 0.033593988783347094
+    },
+    "Corruption": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 7,
+      "pct_missing": 5.07,
+      "n_unique": 131,
+      "min": 0.152543053030968,
+      "max": 0.947856187820435,
+      "mean": 0.7211066262640116
+    },
+    "Positive": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 0,
+      "pct_missing": 0.0,
+      "n_unique": 138,
+      "min": 0.260513246059418,
+      "max": 0.843146860599518,
+      "mean": 0.6521191547314326
+    },
+    "Negative": {
+      "inferred_type": "numeric",
+      "pandas_dtype": "float64",
+      "n_missing": 0,
+      "pct_missing": 0.0,
+      "n_unique": 138,
+      "min": 0.11053529381752,
+      "max": 0.51591569185257,
+      "mean": 0.2934614236912002
+    }
+  },
+  "rows_dropped_no_information": {
+    "threshold_pct": 80.0,
+    "id_columns_detected": [
+      "Country"
+    ],
+    "count": 0,
+    "dropped_rows": []
+  }
+}

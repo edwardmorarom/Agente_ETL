@@ -2,6 +2,7 @@
 
 suppressPackageStartupMessages({
   library(mice)
+  library(kSamples)
   library(optparse)
 })
 
@@ -261,6 +262,140 @@ matrix_to_nested_list <- function(mat) {
   out
 }
 
+matrix_to_array_list <- function(mat) {
+  lapply(seq_len(nrow(mat)), function(i) {
+    as.list(as.numeric(mat[i, ]))
+  })
+}
+
+chain_mean_for_variable <- function(chain_mean, variable) {
+  chain_mean_dims <- dim(chain_mean)
+  variable_names <- dimnames(chain_mean)[[1]]
+
+  if (is.null(variable_names) || !(variable %in% variable_names)) {
+    return(NULL)
+  }
+
+  raw_values <- chain_mean[variable, , , drop = FALSE]
+  matrix(
+    as.numeric(raw_values),
+    nrow = chain_mean_dims[2],
+    ncol = chain_mean_dims[3],
+    byrow = FALSE
+  )
+}
+
+chain_converged <- function(chain_matrix) {
+  if (is.null(chain_matrix) || nrow(chain_matrix) < 2) {
+    return(FALSE)
+  }
+
+  values <- as.numeric(chain_matrix)
+  values <- values[is.finite(values)]
+
+  if (length(values) == 0) {
+    return(FALSE)
+  }
+
+  total_range <- diff(range(values))
+  last_iteration <- chain_matrix[nrow(chain_matrix), ]
+  previous_iteration <- chain_matrix[nrow(chain_matrix) - 1, ]
+  last_diff <- max(abs(last_iteration - previous_iteration), na.rm = TRUE)
+
+  if (!is.finite(last_diff)) {
+    return(FALSE)
+  }
+
+  if (total_range == 0) {
+    return(last_diff == 0)
+  }
+
+  last_diff < 0.10 * total_range
+}
+
+build_convergence_assumptions <- function(mi, vars) {
+  chain_mean <- mi$chainMean
+
+  if (is.null(chain_mean) || is.null(dim(chain_mean)) || length(dim(chain_mean)) < 3) {
+    return(list())
+  }
+
+  out <- list()
+  for (variable in vars) {
+    chain_matrix <- chain_mean_for_variable(chain_mean, variable)
+
+    if (is.null(chain_matrix)) {
+      next
+    }
+
+    out[[variable]] <- list(
+      converged = chain_converged(chain_matrix),
+      chain_mean = matrix_to_array_list(chain_matrix)
+    )
+  }
+
+  out
+}
+
+extract_ad_result <- function(test_result) {
+  if (is.null(test_result) || is.null(test_result$ad)) {
+    return(list(ad_statistic = NULL, p_value = NULL, meets_assumption = NULL))
+  }
+
+  ad_table <- as.matrix(test_result$ad)
+  ad_col <- which(colnames(ad_table) == "AD")[1]
+  p_col <- grep("p", colnames(ad_table), ignore.case = TRUE)[1]
+
+  ad_statistic <- if (!is.na(ad_col)) as.numeric(ad_table[1, ad_col]) else NULL
+  p_value <- if (!is.na(p_col)) as.numeric(ad_table[1, p_col]) else NULL
+  meets_assumption <- if (!is.null(p_value) && is.finite(p_value)) p_value > 0.05 else NULL
+
+  list(
+    ad_statistic = ad_statistic,
+    p_value = p_value,
+    meets_assumption = meets_assumption
+  )
+}
+
+build_distribution_assumptions <- function(mi, data, vars) {
+  out <- list()
+
+  for (variable in vars) {
+    observed_values <- data[[variable]][!is.na(data[[variable]])]
+    imputed_values <- numeric(0)
+
+    if (!is.null(mi$imp[[variable]]) && nrow(mi$imp[[variable]]) > 0) {
+      imputed_values <- as.numeric(unlist(mi$imp[[variable]], use.names = FALSE))
+      imputed_values <- imputed_values[!is.na(imputed_values)]
+    }
+
+    if (length(observed_values) == 0 || length(imputed_values) == 0) {
+      out[[variable]] <- list(
+        ad_statistic = NULL,
+        p_value = NULL,
+        meets_assumption = NULL
+      )
+      next
+    }
+
+    test_result <- tryCatch(
+      suppressWarnings(kSamples::ad.test(observed_values, imputed_values)),
+      error = function(e) NULL
+    )
+
+    out[[variable]] <- extract_ad_result(test_result)
+  }
+
+  out
+}
+
+build_assumptions <- function(mi, data, vars) {
+  list(
+    convergence = build_convergence_assumptions(mi, vars),
+    distribution_comparison = build_distribution_assumptions(mi, data, vars)
+  )
+}
+
 # -----------------------------
 # Pooling
 # -----------------------------
@@ -368,6 +503,8 @@ if (q == 1) {
     )
   )
 }
+
+report$assumptions <- build_assumptions(mi, data, vars)
 
 # -----------------------------
 # Write JSON

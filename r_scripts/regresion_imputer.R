@@ -3,13 +3,18 @@
 suppressPackageStartupMessages({
   library(optparse)
   library(VIM)
+  library(nortest)
 })
+
+lmtest_available <- requireNamespace("lmtest", quietly = TRUE)
 
 option_list <- list(
   make_option("--input", type = "character", default = NULL,
               help = "Ruta CSV de entrada"),
   make_option("--output", type = "character", default = NULL,
               help = "Ruta CSV de salida"),
+  make_option("--output_json", type = "character", default = NULL,
+              help = "Ruta opcional para guardar diagnostico de supuestos en JSON"),
   make_option("--method", type = "character", default = "stochastic_regression",
               help = "stochastic_mean, regression o stochastic_regression [default: %default]"),
   make_option("--models", type = "character", default = NULL,
@@ -167,6 +172,164 @@ validate_models <- function(models, data) {
   }
 }
 
+json_escape <- function(x) {
+  x <- gsub("\\\\", "\\\\\\\\", x)
+  x <- gsub("\"", "\\\\\"", x)
+  x <- gsub("\b", "\\\\b", x)
+  x <- gsub("\f", "\\\\f", x)
+  x <- gsub("\n", "\\\\n", x)
+  x <- gsub("\r", "\\\\r", x)
+  x <- gsub("\t", "\\\\t", x)
+  x
+}
+
+json_number <- function(x) {
+  if (length(x) != 1 || is.na(x) || !is.finite(x)) {
+    return("null")
+  }
+  sprintf("%.15g", x)
+}
+
+to_json <- function(x, indent = 0) {
+  pad <- paste(rep(" ", indent), collapse = "")
+  pad2 <- paste(rep(" ", indent + 2), collapse = "")
+
+  if (is.null(x)) {
+    return("null")
+  }
+
+  if (is.list(x)) {
+    nms <- names(x)
+    is_object <- !is.null(nms) && length(nms) == length(x) && all(nzchar(nms))
+
+    if (length(x) == 0) {
+      return(if (is_object) "{}" else "[]")
+    }
+
+    if (is_object) {
+      pieces <- vapply(seq_along(x), function(i) {
+        paste0(
+          pad2,
+          "\"", json_escape(nms[i]), "\": ",
+          to_json(x[[i]], indent + 2)
+        )
+      }, character(1))
+      return(paste0("{\n", paste(pieces, collapse = ",\n"), "\n", pad, "}"))
+    }
+
+    pieces <- vapply(x, function(item) {
+      paste0(pad2, to_json(item, indent + 2))
+    }, character(1))
+    return(paste0("[\n", paste(pieces, collapse = ",\n"), "\n", pad, "]"))
+  }
+
+  if (is.numeric(x)) {
+    if (length(x) == 1) {
+      return(json_number(x))
+    }
+    return(paste0("[", paste(vapply(x, json_number, character(1)), collapse = ", "), "]"))
+  }
+
+  if (is.logical(x)) {
+    if (length(x) == 1) {
+      if (is.na(x)) return("null")
+      return(if (x) "true" else "false")
+    }
+    vals <- vapply(x, function(v) {
+      if (is.na(v)) "null" else if (v) "true" else "false"
+    }, character(1))
+    return(paste0("[", paste(vals, collapse = ", "), "]"))
+  }
+
+  if (is.character(x)) {
+    if (length(x) == 1) {
+      if (is.na(x)) return("null")
+      return(paste0("\"", json_escape(x), "\""))
+    }
+    vals <- vapply(x, function(v) {
+      if (is.na(v)) "null" else paste0("\"", json_escape(v), "\"")
+    }, character(1))
+    return(paste0("[", paste(vals, collapse = ", "), "]"))
+  }
+
+  stop("Tipo no soportado para serializacion JSON.", call. = FALSE)
+}
+
+empty_test_payload <- function(test_used) {
+  list(
+    test_used = test_used,
+    statistic = NULL,
+    p_value = NULL,
+    meets_assumption = NULL
+  )
+}
+
+test_payload <- function(test_used, statistic, p_value) {
+  list(
+    test_used = test_used,
+    statistic = as.numeric(statistic),
+    p_value = as.numeric(p_value),
+    meets_assumption = if (!is.na(p_value) && is.finite(p_value)) p_value > 0.05 else NULL
+  )
+}
+
+normality_assumption <- function(residual_values) {
+  n <- length(residual_values)
+
+  if (n <= 50) {
+    test_result <- tryCatch(
+      shapiro.test(residual_values),
+      error = function(e) NULL
+    )
+    if (is.null(test_result)) {
+      return(empty_test_payload("shapiro-wilk"))
+    }
+    return(test_payload("shapiro-wilk", test_result$statistic, test_result$p.value))
+  }
+
+  test_result <- tryCatch(
+    nortest::ad.test(residual_values),
+    error = function(e) NULL
+  )
+  if (is.null(test_result)) {
+    return(empty_test_payload("anderson-darling"))
+  }
+  test_payload("anderson-darling", test_result$statistic, test_result$p.value)
+}
+
+homoscedasticity_assumption <- function(fit, residual_values) {
+  if (lmtest_available) {
+    test_result <- tryCatch(
+      lmtest::bptest(fit),
+      error = function(e) NULL
+    )
+    if (!is.null(test_result)) {
+      return(test_payload("breusch-pagan", test_result$statistic, test_result$p.value))
+    }
+  }
+
+  fitted_values <- fitted(fit)
+  test_result <- tryCatch(
+    cor.test(residual_values^2, fitted_values, method = "pearson"),
+    error = function(e) NULL
+  )
+  if (is.null(test_result)) {
+    return(empty_test_payload("pearson_alternative"))
+  }
+  test_payload("pearson_alternative", test_result$estimate, test_result$p.value)
+}
+
+model_assumptions <- function(fit) {
+  residual_values <- residuals(fit)
+  residual_values <- residual_values[is.finite(residual_values)]
+
+  list(
+    n = length(residual_values),
+    normality = normality_assumption(residual_values),
+    homoscedasticity = homoscedasticity_assumption(fit, residual_values)
+  )
+}
+
 stochastic_mean_impute <- function(data) {
   result <- data
   numeric_cols <- names(data)[vapply(data, is.numeric, logical(1))]
@@ -195,6 +358,8 @@ stochastic_mean_impute <- function(data) {
   result
 }
 
+assumptions_report <- setNames(list(), character(0))
+
 regression_impute <- function(data, models, stochastic = FALSE) {
   datos.reg <- data
   datos.sreg <- data
@@ -207,6 +372,8 @@ regression_impute <- function(data, models, stochastic = FALSE) {
       lm(model, data = datos.reg),
       error = function(e) fail("Error al ajustar el modelo ", k, ": ", conditionMessage(e))
     )
+
+    assumptions_report[[target]] <<- model_assumptions(fit)
 
     sig <- sigma(fit)
     if (!is.finite(sig)) {
@@ -264,3 +431,20 @@ tryCatch(
   write.csv(resultado, opt$output, row.names = FALSE, na = ""),
   error = function(e) fail("No fue posible escribir el CSV de salida: ", conditionMessage(e))
 )
+
+if (!is.null(opt$output_json) && nzchar(opt$output_json)) {
+  output_json_dir <- dirname(opt$output_json)
+  if (!dir.exists(output_json_dir)) {
+    ok <- dir.create(output_json_dir, recursive = TRUE, showWarnings = FALSE)
+    if (!ok && !dir.exists(output_json_dir)) {
+      fail("No fue posible crear la carpeta de salida JSON: ", output_json_dir)
+    }
+  }
+
+  report <- list(assumptions = assumptions_report)
+
+  tryCatch(
+    writeLines(to_json(report), con = opt$output_json, useBytes = TRUE),
+    error = function(e) fail("No fue posible escribir el JSON de salida: ", conditionMessage(e))
+  )
+}
