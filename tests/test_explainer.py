@@ -135,3 +135,20 @@ def test_ask_trims_long_history_before_calling_client() -> None:
     assert sent_messages[1]["content"] == "resumen inicial"
     assert sent_messages[2]["content"] == "mensaje 3"
     assert sent_messages[-1]["content"] == "Pregunta final"
+
+
+def test_explain_includes_domain_context_as_first_user_line() -> None:
+    client = FakeLLMClient()
+    explainer = PipelineExplainer(
+        make_pipeline_result(),
+        client=client,
+        domain_context="Encuesta mundial de felicidad 2023.",
+    )
+
+    explainer.explain()
+
+    user_message = client.calls[0][1]["content"]
+    assert user_message.splitlines()[0] == (
+        "Contexto del dataset proporcionado por el usuario: "
+        "Encuesta mundial de felicidad 2023."
+    )

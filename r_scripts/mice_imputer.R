@@ -285,19 +285,15 @@ chain_mean_for_variable <- function(chain_mean, variable) {
   )
 }
 
-chain_converged <- function(chain_matrix) {
+chain_converged <- function(chain_matrix, observed_range) {
   if (is.null(chain_matrix) || nrow(chain_matrix) < 2) {
     return(FALSE)
   }
 
-  values <- as.numeric(chain_matrix)
-  values <- values[is.finite(values)]
-
-  if (length(values) == 0) {
+  if (!is.finite(observed_range)) {
     return(FALSE)
   }
 
-  total_range <- diff(range(values))
   last_iteration <- chain_matrix[nrow(chain_matrix), ]
   previous_iteration <- chain_matrix[nrow(chain_matrix) - 1, ]
   last_diff <- max(abs(last_iteration - previous_iteration), na.rm = TRUE)
@@ -306,14 +302,14 @@ chain_converged <- function(chain_matrix) {
     return(FALSE)
   }
 
-  if (total_range == 0) {
+  if (observed_range == 0) {
     return(last_diff == 0)
   }
 
-  last_diff < 0.10 * total_range
+  last_diff < 0.10 * observed_range
 }
 
-build_convergence_assumptions <- function(mi, vars) {
+build_convergence_assumptions <- function(mi, data, vars) {
   chain_mean <- mi$chainMean
 
   if (is.null(chain_mean) || is.null(dim(chain_mean)) || length(dim(chain_mean)) < 3) {
@@ -328,8 +324,15 @@ build_convergence_assumptions <- function(mi, vars) {
       next
     }
 
+    observed_values <- data[[variable]][!is.na(data[[variable]])]
+    observed_range <- if (length(observed_values) > 0) {
+      diff(range(observed_values, na.rm = TRUE))
+    } else {
+      NA_real_
+    }
+
     out[[variable]] <- list(
-      converged = chain_converged(chain_matrix),
+      converged = chain_converged(chain_matrix, observed_range),
       chain_mean = matrix_to_array_list(chain_matrix)
     )
   }
@@ -391,7 +394,7 @@ build_distribution_assumptions <- function(mi, data, vars) {
 
 build_assumptions <- function(mi, data, vars) {
   list(
-    convergence = build_convergence_assumptions(mi, vars),
+    convergence = build_convergence_assumptions(mi, data, vars),
     distribution_comparison = build_distribution_assumptions(mi, data, vars)
   )
 }

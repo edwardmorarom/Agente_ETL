@@ -56,23 +56,24 @@ if (nrow(Y) == 0 || ncol(Y) == 0) {
   stop("El CSV de entrada no contiene datos analizables.", call. = FALSE)
 }
 
-non_numeric <- names(Y)[!vapply(Y, is.numeric, logical(1))]
-if (length(non_numeric) > 0) {
-  stop(
-    paste0(
-      "El algoritmo EM y el test de Little de los scripts originales requieren variables numéricas. ",
-      "Columnas no numéricas encontradas: ",
-      paste(non_numeric, collapse = ", ")
-    ),
-    call. = FALSE
-  )
-}
-
 if (!anyNA(Y)) {
   stop("El CSV de entrada no contiene datos faltantes (NA).", call. = FALSE)
 }
 
 n = nrow(Y) ; p = ncol(Y)
+
+numeric_columns <- names(Y)[vapply(Y, is.numeric, logical(1))]
+columns_excluded_from_numeric_analysis <- setdiff(names(Y), numeric_columns)
+Y_numeric <- Y[numeric_columns]
+run_numeric_analysis <- ncol(Y_numeric) >= 2
+numeric_analysis_skipped <- NULL
+
+if (!run_numeric_analysis) {
+  numeric_analysis_skipped <- list(
+    reason = "Menos de 2 columnas numericas disponibles",
+    columns_excluded = as.list(columns_excluded_from_numeric_analysis)
+  )
+}
 
 # -----------------------------------------------------------------------------
 # Utilidades para guardar gráficos
@@ -150,7 +151,10 @@ save_png(
 # -----------------------------------------------------------------------------
 # d. Test de Little vía naniar
 # -----------------------------------------------------------------------------
-mcar_test_result <- naniar::mcar_test(Y)
+if (run_numeric_analysis) {
+  n_numeric = nrow(Y_numeric) ; p_numeric = ncol(Y_numeric)
+
+mcar_test_result <- naniar::mcar_test(Y_numeric)
 
 mcar_statistic <- as.numeric(mcar_test_result$statistic[1])
 mcar_p_value <- as.numeric(mcar_test_result$p.value[1])
@@ -167,7 +171,7 @@ mcar_conclusion <- if (is.na(mcar_p_value)) {
 # e. Algoritmo EM manual del segundo script
 #    Se conserva la lógica original; únicamente Y0 toma el CSV de entrada.
 # -----------------------------------------------------------------------------
-Y0 = Y
+Y0 = Y_numeric
 ind.miss = ici(Y0) ; ind.miss # indicador de fila con NA
 R = is.na(Y0) ; R # matriz indicadora de faltantes
 
@@ -187,12 +191,12 @@ for(t in 0:100){
       VYi = S[R[i,],R[i,]] - S[R[i,],!R[i,], drop = FALSE]%*%solve(S[!R[i,],!R[i,]], drop = FALSE)%*%S[!R[i,],R[i,], drop = FALSE] 
       Y0[i,R[i,]] = as.vector(EYi)
       Vi = 0*S ; Vi[R[i,],R[i,]] = VYi 
-      St = 1/n * Vi + St
+      St = 1/n_numeric * Vi + St
     }
   }
   
   mu = colMeans(Y0)           
-  S = St + (n-1)/n*cov(Y0)  
+  S = St + (n_numeric-1)/n_numeric*cov(Y0)  
   
   if(sum((mu-mu_1)^2) < 10^(-6) &
      sum((S-S_1)^2) < 10^(-6)) break
@@ -227,7 +231,7 @@ for(pj in pats){
   if(kj == 0) next # al menos una variable debe estar observada
   
   # promedio del patrón (solo en variables observadas)
-  ybarj = colMeans(Y[idx, Oj, drop = FALSE])
+  ybarj = colMeans(Y_numeric[idx, Oj, drop = FALSE])
   
   # Subvector/submatriz según Oj
   muj = mu[Oj]
@@ -242,7 +246,7 @@ for(pj in pats){
 }
 
 # Grados de libertad y p-valor
-df = df_sum - p
+df = df_sum - p_numeric
 p_value = 1 - pchisq(X2, df)
 
 # Resultado
@@ -253,7 +257,7 @@ p_value
 # -----------------------------------------------------------------------------
 # f. EM vía mvnmle para comparar contra el manual
 # -----------------------------------------------------------------------------
-EM = mvnmle::mlest(Y, iterlim = 100)
+EM = mvnmle::mlest(Y_numeric, iterlim = 100)
 EM$muhat
 EM$sigmahat
 
@@ -261,13 +265,14 @@ mu_mvnmle <- EM$muhat
 S_mvnmle <- EM$sigmahat
 
 if (is.null(names(mu_mvnmle))) {
-  names(mu_mvnmle) <- colnames(Y)
+  names(mu_mvnmle) <- colnames(Y_numeric)
 }
 if (is.null(rownames(S_mvnmle))) {
-  rownames(S_mvnmle) <- colnames(Y)
+  rownames(S_mvnmle) <- colnames(Y_numeric)
 }
 if (is.null(colnames(S_mvnmle))) {
-  colnames(S_mvnmle) <- colnames(Y)
+  colnames(S_mvnmle) <- colnames(Y_numeric)
+}
 }
 
 # -----------------------------------------------------------------------------
@@ -334,7 +339,36 @@ named_matrix_payload <- function(x, fallback_names) {
 
 md_pairs_payload <- lapply(md_pairs_result, matrix_payload)
 
-result <- list(
+numeric_analysis_payload <- if (run_numeric_analysis) {
+  list(
+    columns_excluded_from_numeric_analysis = as.list(columns_excluded_from_numeric_analysis),
+    mcar_test_naniar = list(
+      statistic = mcar_statistic,
+      p_value = mcar_p_value,
+      conclusion = mcar_conclusion
+    ),
+    little_test_manual = list(
+      X2 = as.numeric(X2),
+      df = as.numeric(df),
+      p_value = as.numeric(p_value)
+    ),
+    em_estimates_manual = list(
+      mu = named_vector_payload(mu_manual, colnames(Y_numeric)),
+      sigma = named_matrix_payload(S_manual, colnames(Y_numeric))
+    ),
+    em_estimates_mvnmle = list(
+      mu = named_vector_payload(mu_mvnmle, colnames(Y_numeric)),
+      sigma = named_matrix_payload(S_mvnmle, colnames(Y_numeric))
+    )
+  )
+} else {
+  list(
+    numeric_analysis_skipped = numeric_analysis_skipped
+  )
+}
+
+result <- c(
+  list(
   md_pattern_summary = list(
     md_pattern = matrix_payload(md_pattern_result),
     md_pairs = md_pairs_payload,
@@ -342,26 +376,12 @@ result <- list(
     inspect_na = data_frame_records(inspect_na_result),
     diagnose = data_frame_records(diagnose_result),
     profile_missing = data_frame_records(profile_missing_result)
+  )
   ),
-  mcar_test_naniar = list(
-    statistic = mcar_statistic,
-    p_value = mcar_p_value,
-    conclusion = mcar_conclusion
-  ),
-  little_test_manual = list(
-    X2 = as.numeric(X2),
-    df = as.numeric(df),
-    p_value = as.numeric(p_value)
-  ),
-  em_estimates_manual = list(
-    mu = named_vector_payload(mu_manual, colnames(Y)),
-    sigma = named_matrix_payload(S_manual, colnames(Y))
-  ),
-  em_estimates_mvnmle = list(
-    mu = named_vector_payload(mu_mvnmle, colnames(Y)),
-    sigma = named_matrix_payload(S_mvnmle, colnames(Y))
-  ),
-  plots_generated = as.list(plots_generated)
+  numeric_analysis_payload,
+  list(
+    plots_generated = as.list(plots_generated)
+  )
 )
 
 # -----------------------------------------------------------------------------

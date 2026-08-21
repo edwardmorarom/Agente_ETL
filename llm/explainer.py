@@ -19,9 +19,11 @@ class PipelineExplainer:
         self,
         pipeline_result: dict[str, Any],
         client: LLMClient | None = None,
+        domain_context: str | None = None,
     ) -> None:
         self.pipeline_result = pipeline_result
         self.client = client or get_llm_client()
+        self.domain_context = domain_context
         self.history: list[dict[str, str]] = []
 
     def explain(self) -> str:
@@ -78,6 +80,12 @@ class PipelineExplainer:
             f"Razonamiento: {self.pipeline_result.get('reasoning')}",
             f"Advertencias: {self._format_value(self.pipeline_result.get('warnings', []))}",
         ]
+        if self.domain_context is not None:
+            lines.insert(
+                0,
+                "Contexto del dataset proporcionado por el usuario: "
+                f"{self.domain_context}",
+            )
 
         imputer_report = self.pipeline_result.get("imputer_report")
         if imputer_report is not None:
