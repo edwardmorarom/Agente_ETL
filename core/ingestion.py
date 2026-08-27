@@ -268,10 +268,73 @@ def build_profile(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def detect_id_columns(df: pd.DataFrame) -> list[str]:
+    id_columns = []
+
+    for col in df.columns:
+        series = df[col]
+        if (
+            pd.api.types.is_bool_dtype(series)
+            or pd.api.types.is_datetime64_any_dtype(series)
+            or pd.api.types.is_float_dtype(series)
+        ):
+            continue
+        inferred = infer_column_type(series)
+        if inferred in ("boolean", "datetime"):
+            continue
+        if series.nunique() == len(df):
+            id_columns.append(col)
+
+    return id_columns
+
+
 def _safe_float(value: Any) -> float | None:
     if value is None or pd.isna(value):
         return None
     return float(value)
+
+
+def _safe_profile_value(value: Any) -> Any:
+    if pd.isna(value):
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def drop_rows_without_information(
+    df: pd.DataFrame,
+    id_columns: list[str],
+    threshold_pct: float = 80.0,
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    data_columns = [col for col in df.columns if col not in set(id_columns)]
+    dropped_rows: list[dict[str, Any]] = []
+
+    if not data_columns:
+        return df.copy(), dropped_rows
+
+    for row_index, row in df.iterrows():
+        pct_missing = float(row[data_columns].isna().mean() * 100)
+        if pct_missing >= threshold_pct:
+            dropped_rows.append(
+                {
+                    "row_index": int(row_index) if isinstance(row_index, int) else row_index,
+                    "id_value": {
+                        col: _safe_profile_value(row[col])
+                        for col in id_columns
+                        if col in df.columns
+                    },
+                    "pct_missing": round(pct_missing, 2),
+                }
+            )
+
+    if not dropped_rows:
+        return df.copy(), dropped_rows
+
+    dropped_indexes = [entry["row_index"] for entry in dropped_rows]
+    return df.drop(index=dropped_indexes), dropped_rows
 
 
 # -----------------------------------------------------------------------
@@ -292,11 +355,24 @@ def standardize(df: pd.DataFrame, profile: dict[str, Any]) -> pd.DataFrame:
             if inferred in ("numeric", "integer"):
                 result[col] = pd.to_numeric(result[col], errors="coerce")
             elif inferred == "boolean":
+                boolean_map = {
+                    "true": True,
+                    "1": True,
+                    "verdadero": True,
+                    "si": True,
+                    "s\u00ed": True,
+                    "yes": True,
+                    "false": False,
+                    "0": False,
+                    "falso": False,
+                    "no": False,
+                }
                 result[col] = (
                     result[col]
                     .astype(str)
                     .str.lower()
-                    .map({"true": True, "1": True, "false": False, "0": False})
+                    .str.strip()
+                    .map(boolean_map)
                 )
             elif inferred == "datetime":
                 import warnings
@@ -335,6 +411,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Nombre u número de hoja para archivos Excel (default: la primera)",
     )
+    parser.add_argument(
+        "--id_columns",
+        default=None,
+        help="Columnas ID separadas por coma. Si se omite, se detectan automaticamente.",
+    )
+    parser.add_argument(
+        "--row_missing_threshold",
+        type=float,
+        default=80.0,
+        help="Porcentaje de faltantes por fila para eliminarla [default: 80.0]",
+    )
     args = parser.parse_args(argv)
 
     extra_tokens = None
@@ -349,6 +436,34 @@ def main(argv: list[str] | None = None) -> int:
         df = load_file(args.input, extra_na_tokens=extra_tokens, sheet=sheet)
         profile = build_profile(df)
         df_standardized = standardize(df, profile)
+        if args.id_columns:
+            id_columns = [
+                col.strip()
+                for col in args.id_columns.split(",")
+                if col.strip()
+            ]
+            missing_id_columns = [
+                col for col in id_columns if col not in df_standardized.columns
+            ]
+            if missing_id_columns:
+                raise IngestionError(
+                    "Columnas ID no encontradas: "
+                    f"{', '.join(missing_id_columns)}"
+                )
+        else:
+            id_columns = detect_id_columns(df_standardized)
+
+        df_standardized, dropped_rows = drop_rows_without_information(
+            df_standardized,
+            id_columns,
+            threshold_pct=args.row_missing_threshold,
+        )
+        profile["rows_dropped_no_information"] = {
+            "threshold_pct": args.row_missing_threshold,
+            "id_columns_detected": id_columns,
+            "count": len(dropped_rows),
+            "dropped_rows": dropped_rows,
+        }
 
         args.output_csv.parent.mkdir(parents=True, exist_ok=True)
         args.output_profile_json.parent.mkdir(parents=True, exist_ok=True)
@@ -364,6 +479,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"OK: {args.input.name} -> {args.output_csv.name} "
           f"({profile['n_rows']} filas, {profile['n_columns']} columnas, "
           f"{profile['pct_missing_overall']}% faltantes)")
+    dropped_count = profile["rows_dropped_no_information"]["count"]
+    if dropped_count > 0:
+        threshold = profile["rows_dropped_no_information"]["threshold_pct"]
+        print(
+            f"Se eliminaron {dropped_count} filas sin informacion suficiente "
+            f"(>={threshold:g}% faltantes). Ver detalle en el perfil JSON."
+        )
     return 0
 
 

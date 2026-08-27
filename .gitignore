@@ -10,3 +10,4 @@ diagnostico_output/
 *.egg-info/
 dist/
 build/
+outputs/

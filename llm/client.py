@@ -2,17 +2,64 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import os
-from typing import Any
+import time
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 import requests
 
 
 DEFAULT_TIMEOUT_SECONDS = 30
+MAX_RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = [2, 4, 8]
+RETRYABLE_STATUS_CODES = {429, 503}
 
 
 class LLMRequestError(RuntimeError):
     """Error controlado al llamar a un proveedor LLM externo."""
+
+
+def _request_error_message(provider: str, exc: requests.RequestException) -> str:
+    response = getattr(exc, "response", None)
+    if response is not None:
+        return (
+            f"No fue posible llamar a {provider}. Status: {response.status_code}. "
+            f"Detalle: {response.text[:500]}"
+        )
+    return f"No fue posible llamar a {provider}. Error de conexion: {exc}"
+
+
+def _status_code_from_exception(exc: requests.RequestException) -> int | None:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+    return getattr(response, "status_code", None)
+
+
+def _request_with_retries(
+    provider: str,
+    send_request: Callable[[], requests.Response],
+) -> requests.Response:
+    last_exc: requests.RequestException | None = None
+    for attempt in range(MAX_RETRY_ATTEMPTS):
+        try:
+            response = send_request()
+            response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            status_code = _status_code_from_exception(exc)
+            should_retry = (
+                status_code in RETRYABLE_STATUS_CODES
+                and attempt < MAX_RETRY_ATTEMPTS - 1
+            )
+            if not should_retry:
+                raise LLMRequestError(_request_error_message(provider, exc)) from exc
+            time.sleep(RETRY_BACKOFF_SECONDS[attempt])
+
+    if last_exc is not None:
+        raise LLMRequestError(_request_error_message(provider, last_exc))
+    raise LLMRequestError(f"No fue posible llamar a {provider}.")
 
 
 class LLMClient(ABC):
@@ -33,18 +80,16 @@ class GeminiClient(LLMClient):
     ) -> None:
         load_dotenv()
         self.api_key = api_key or os.environ["GEMINI_API_KEY"]
-        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        self.model = model or os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self.timeout = int(os.environ.get("GEMINI_TIMEOUT_SECONDS", "60"))
 
     def chat(
         self,
         messages: list[dict[str, str]],
         generation_options: dict[str, Any] | None = None,
     ) -> str:
-        url = (
-            f"{self.base_url}/models/{self.model}:generateContent"
-            f"?key={self.api_key}"
-        )
+        url = f"{self.base_url}/models/{self.model}:generateContent"
         payload = {
             "contents": [
                 {
@@ -75,12 +120,20 @@ class GeminiClient(LLMClient):
         return "user"
 
     def _post(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            response = requests.post(url, json=payload, timeout=DEFAULT_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as exc:
-            raise LLMRequestError("No fue posible llamar a Gemini.") from exc
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        response = _request_with_retries(
+            "Gemini",
+            lambda: requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout,
+            ),
+        )
+        return response.json()
 
 
 class DeepSeekClient(LLMClient):
@@ -117,17 +170,17 @@ class DeepSeekClient(LLMClient):
                 payload["max_tokens"] = generation_options["num_predict"]
 
         try:
-            response = requests.post(
-                self.base_url,
-                headers=headers,
-                json=payload,
-                timeout=DEFAULT_TIMEOUT_SECONDS,
+            response = _request_with_retries(
+                "DeepSeek",
+                lambda: requests.post(
+                    self.base_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=DEFAULT_TIMEOUT_SECONDS,
+                ),
             )
-            response.raise_for_status()
             data = response.json()
             return data["choices"][0]["message"]["content"]
-        except requests.RequestException as exc:
-            raise LLMRequestError("No fue posible llamar a DeepSeek.") from exc
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMRequestError("Respuesta invalida de DeepSeek.") from exc
 
@@ -170,7 +223,7 @@ class OllamaClient(LLMClient):
             data = response.json()
             return data["message"]["content"]
         except requests.RequestException as exc:
-            raise LLMRequestError("No fue posible llamar a Ollama.") from exc
+            raise LLMRequestError(_request_error_message("Ollama", exc)) from exc
         except (KeyError, TypeError) as exc:
             raise LLMRequestError("Respuesta invalida de Ollama.") from exc
 

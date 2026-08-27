@@ -2,6 +2,8 @@
 
 suppressPackageStartupMessages({
   library(mice)
+  library(kSamples)
+  library(MASS)
   library(optparse)
 })
 
@@ -31,6 +33,12 @@ option_list <- list(
     type = "character",
     default = NULL,
     help = "Columnas separadas por coma para el pooling"
+  ),
+  make_option(
+    c("--beta_vars"),
+    type = "character",
+    default = NULL,
+    help = "Columnas separadas por coma para ajuste opcional de distribucion beta"
   ),
   make_option(
     c("--m"),
@@ -96,6 +104,13 @@ if (length(vars) == 0) {
   stop("No hay variables numericas disponibles para calcular el pooling.", call. = FALSE)
 }
 
+if (is.null(opt$beta_vars) || !nzchar(trimws(opt$beta_vars))) {
+  beta_vars <- character(0)
+} else {
+  beta_vars <- trimws(strsplit(opt$beta_vars, ",", fixed = TRUE)[[1]])
+  beta_vars <- beta_vars[nzchar(beta_vars)]
+}
+
 not_found <- setdiff(vars, names(data))
 if (length(not_found) > 0) {
   stop(
@@ -107,12 +122,34 @@ if (length(not_found) > 0) {
   )
 }
 
+beta_not_found <- setdiff(beta_vars, names(data))
+if (length(beta_not_found) > 0) {
+  stop(
+    paste0(
+      "Variables beta no encontradas en el dataset: ",
+      paste(beta_not_found, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
 non_numeric <- vars[!vapply(data[vars], is.numeric, logical(1))]
 if (length(non_numeric) > 0) {
   stop(
     paste0(
       "Las variables usadas para el pooling deben ser numericas: ",
       paste(non_numeric, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
+beta_non_numeric <- beta_vars[!vapply(data[beta_vars], is.numeric, logical(1))]
+if (length(beta_non_numeric) > 0) {
+  stop(
+    paste0(
+      "Las variables usadas para ajuste beta deben ser numericas: ",
+      paste(beta_non_numeric, collapse = ", ")
     ),
     call. = FALSE
   )
@@ -261,6 +298,274 @@ matrix_to_nested_list <- function(mat) {
   out
 }
 
+matrix_to_array_list <- function(mat) {
+  lapply(seq_len(nrow(mat)), function(i) {
+    as.list(as.numeric(mat[i, ]))
+  })
+}
+
+chain_mean_for_variable <- function(chain_mean, variable) {
+  chain_mean_dims <- dim(chain_mean)
+  variable_names <- dimnames(chain_mean)[[1]]
+
+  if (is.null(variable_names) || !(variable %in% variable_names)) {
+    return(NULL)
+  }
+
+  raw_values <- chain_mean[variable, , , drop = FALSE]
+  matrix(
+    as.numeric(raw_values),
+    nrow = chain_mean_dims[2],
+    ncol = chain_mean_dims[3],
+    byrow = FALSE
+  )
+}
+
+chain_converged <- function(chain_matrix, observed_range) {
+  if (is.null(chain_matrix) || nrow(chain_matrix) < 2) {
+    return(FALSE)
+  }
+
+  if (!is.finite(observed_range)) {
+    return(FALSE)
+  }
+
+  last_iteration <- chain_matrix[nrow(chain_matrix), ]
+  previous_iteration <- chain_matrix[nrow(chain_matrix) - 1, ]
+  last_diff <- max(abs(last_iteration - previous_iteration), na.rm = TRUE)
+
+  if (!is.finite(last_diff)) {
+    return(FALSE)
+  }
+
+  if (observed_range == 0) {
+    return(last_diff == 0)
+  }
+
+  last_diff < 0.10 * observed_range
+}
+
+build_convergence_assumptions <- function(mi, data, vars) {
+  chain_mean <- mi$chainMean
+
+  if (is.null(chain_mean) || is.null(dim(chain_mean)) || length(dim(chain_mean)) < 3) {
+    return(list())
+  }
+
+  out <- list()
+  for (variable in vars) {
+    chain_matrix <- chain_mean_for_variable(chain_mean, variable)
+
+    if (is.null(chain_matrix)) {
+      next
+    }
+
+    observed_values <- data[[variable]][!is.na(data[[variable]])]
+    observed_range <- if (length(observed_values) > 0) {
+      diff(range(observed_values, na.rm = TRUE))
+    } else {
+      NA_real_
+    }
+
+    out[[variable]] <- list(
+      converged = chain_converged(chain_matrix, observed_range),
+      chain_mean = matrix_to_array_list(chain_matrix)
+    )
+  }
+
+  out
+}
+
+extract_ad_result <- function(test_result) {
+  if (is.null(test_result) || is.null(test_result$ad)) {
+    return(list(ad_statistic = NULL, p_value = NULL, meets_assumption = NULL))
+  }
+
+  ad_table <- as.matrix(test_result$ad)
+  ad_col <- which(colnames(ad_table) == "AD")[1]
+  p_col <- grep("p", colnames(ad_table), ignore.case = TRUE)[1]
+
+  ad_statistic <- if (!is.na(ad_col)) as.numeric(ad_table[1, ad_col]) else NULL
+  p_value <- if (!is.na(p_col)) as.numeric(ad_table[1, p_col]) else NULL
+  meets_assumption <- if (!is.null(p_value) && is.finite(p_value)) p_value > 0.05 else NULL
+
+  list(
+    ad_statistic = ad_statistic,
+    p_value = p_value,
+    meets_assumption = meets_assumption
+  )
+}
+
+build_distribution_assumptions <- function(mi, data, vars) {
+  out <- list()
+
+  for (variable in vars) {
+    observed_values <- data[[variable]][!is.na(data[[variable]])]
+    imputed_values <- numeric(0)
+
+    if (!is.null(mi$imp[[variable]]) && nrow(mi$imp[[variable]]) > 0) {
+      imputed_values <- as.numeric(unlist(mi$imp[[variable]], use.names = FALSE))
+      imputed_values <- imputed_values[!is.na(imputed_values)]
+    }
+
+    if (length(observed_values) == 0 || length(imputed_values) == 0) {
+      out[[variable]] <- list(
+        ad_statistic = NULL,
+        p_value = NULL,
+        meets_assumption = NULL
+      )
+      next
+    }
+
+    test_result <- tryCatch(
+      suppressWarnings(kSamples::ad.test(observed_values, imputed_values)),
+      error = function(e) NULL
+    )
+
+    out[[variable]] <- extract_ad_result(test_result)
+  }
+
+  out
+}
+
+build_assumptions <- function(mi, data, vars) {
+  list(
+    convergence = build_convergence_assumptions(mi, data, vars),
+    distribution_comparison = build_distribution_assumptions(mi, data, vars)
+  )
+}
+
+scale_beta_values <- function(values, scale_used) {
+  if (scale_used == "percentage_0_100") {
+    values <- values / 100
+  }
+
+  if (any(values < 0 | values > 1, na.rm = TRUE)) {
+    stop("Los valores para ajuste beta deben estar en escala 0-1 o 0-100.", call. = FALSE)
+  }
+
+  values[values == 0] <- 1e-4
+  values[values == 1] <- 1 - 1e-4
+  values
+}
+
+detect_beta_scale <- function(data, variable) {
+  observed_values <- data[[variable]][!is.na(data[[variable]])]
+  max_observed <- max(observed_values, na.rm = TRUE)
+
+  if (!is.finite(max_observed)) {
+    stop(
+      paste0("No hay valores observados finitos para ajuste beta en: ", variable),
+      call. = FALSE
+    )
+  }
+
+  if (max_observed <= 1) {
+    return("proportion_0_1")
+  }
+
+  if (max_observed <= 100) {
+    return("percentage_0_100")
+  }
+
+  stop(
+    paste0("La variable ", variable, " no parece estar en escala 0-1 ni 0-100."),
+    call. = FALSE
+  )
+}
+
+fit_beta_distribution <- function(values, variable) {
+  fit <- tryCatch(
+    suppressWarnings(MASS::fitdistr(
+      values,
+      densfun = "beta",
+      start = list(shape1 = 1, shape2 = 1)
+    )),
+    error = function(e) {
+      stop(
+        paste0("Fallo el ajuste beta para ", variable, ": ", conditionMessage(e)),
+        call. = FALSE
+      )
+    }
+  )
+
+  fit
+}
+
+severity_metric_list <- function(lambda, r, df, gamma) {
+  list(
+    lambda = as.numeric(lambda),
+    r = as.numeric(r),
+    df = as.numeric(df),
+    gamma = as.numeric(gamma)
+  )
+}
+
+matrix_to_plain_array <- function(mat) {
+  lapply(seq_len(nrow(mat)), function(i) {
+    as.list(as.numeric(mat[i, ]))
+  })
+}
+
+build_beta_distribution_fit <- function(completed_sets, data, beta_vars, m, n) {
+  out <- list()
+
+  if (length(beta_vars) == 0) {
+    return(out)
+  }
+
+  for (variable in beta_vars) {
+    scale_used <- detect_beta_scale(data, variable)
+    the <- matrix(NA_real_, nrow = m, ncol = 2)
+    colnames(the) <- c("shape1", "shape2")
+    v <- matrix(NA_real_, nrow = m, ncol = 2)
+    colnames(v) <- c("shape1", "shape2")
+    Sig <- matrix(NA_real_, nrow = m, ncol = 4)
+
+    for (i in seq_len(m)) {
+      values <- completed_sets[[i]][[variable]]
+      values <- values[!is.na(values)]
+      values <- scale_beta_values(values, scale_used)
+      fit <- fit_beta_distribution(values, variable)
+
+      the[i, ] <- coef(fit)
+      v[i, ] <- fit$sd^2
+      Sig[i, ] <- as.vector(fit$vcov)
+    }
+
+    the.c <- colMeans(the)
+    var.c <- colMeans(v) + (1 + 1 / m) * apply(the, 2, var)
+
+    lam <- (1 + 1 / m) * apply(the, 2, var) / var.c
+    r <- (1 + 1 / m) * apply(the, 2, var) / colMeans(v)
+    gl <- n * (n - 1) / (n + 2) * (1 - lam)
+    gam <- 1 / (1 + r) * (r + 2 / (gl + 3))
+
+    Sigma <- matrix(colMeans(Sig), 2, 2)
+    cov.c <- Sigma + (1 + 1 / m) * cov(the)
+
+    lam_joint <- (1 + 1 / m) * sum(diag(cov(the) %*% solve(cov.c))) / 2
+    r_joint <- (1 + 1 / m) * sum(diag(cov(the) %*% solve(Sigma))) / 2
+    gl_joint <- n * (n - 1) / (n + 2) * (1 - lam_joint)
+    gam_joint <- 1 / (1 + r_joint) * (r_joint + 2 / (gl_joint + 3))
+
+    out[[variable]] <- list(
+      scale_used = scale_used,
+      n_imputations = m,
+      shape1_pooled = as.numeric(the.c[1]),
+      shape2_pooled = as.numeric(the.c[2]),
+      covariance_pooled = matrix_to_plain_array(cov.c),
+      severity_per_parameter = list(
+        shape1 = severity_metric_list(lam[1], r[1], gl[1], gam[1]),
+        shape2 = severity_metric_list(lam[2], r[2], gl[2], gam[2])
+      ),
+      severity_joint = severity_metric_list(lam_joint, r_joint, gl_joint, gam_joint)
+    )
+  }
+
+  out
+}
+
 # -----------------------------
 # Pooling
 # -----------------------------
@@ -366,6 +671,18 @@ if (q == 1) {
       df = as.numeric(v),
       gamma = as.numeric(gam)
     )
+  )
+}
+
+report$assumptions <- build_assumptions(mi, data, vars)
+
+if (length(beta_vars) > 0) {
+  report$beta_distribution_fit <- build_beta_distribution_fit(
+    completed_sets,
+    data,
+    beta_vars,
+    m,
+    n
   )
 }
 

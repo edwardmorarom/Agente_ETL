@@ -4,7 +4,6 @@ from typing import Any, Literal
 
 import pandas as pd
 
-from imputers.diagnostico_runner import DiagnosticoRunner
 from imputers.mice_imputer import MiceImputer
 from imputers.regresion_imputer import RegresionImputer
 
@@ -16,18 +15,21 @@ class ImputationPipeline:
         high_missing_threshold: float = 15.0,
         low_ratio_threshold: float = 5.0,
         lambda_warning_threshold: float = 0.30,
+        mice_vars: list[str] | None = None,
+        beta_vars: list[str] | None = None,
     ) -> None:
         self.low_missing_threshold = low_missing_threshold
         self.high_missing_threshold = high_missing_threshold
         self.low_ratio_threshold = low_ratio_threshold
         self.lambda_warning_threshold = lambda_warning_threshold
+        self.mice_vars = mice_vars
+        self.beta_vars = beta_vars
 
     def run(
         self,
         df: pd.DataFrame,
         goal: Literal["inference", "prediction"],
     ) -> dict[str, Any]:
-        diagnostico = DiagnosticoRunner().run(df)
         max_pct = float((df.isna().mean() * 100).max()) if df.shape[1] else 0.0
         ratio = len(df) / df.shape[1] if df.shape[1] else float("inf")
 
@@ -43,7 +45,11 @@ class ImputationPipeline:
         return {
             "decision": decision,
             "reasoning": self._build_reasoning(decision, max_pct, ratio, goal),
-            "diagnostico": diagnostico,
+            "criteria": {
+                "max_pct": round(max_pct, 2),
+                "ratio": round(ratio, 2),
+                "goal": goal,
+            },
             "imputed_data": imputed_data,
             "imputer_report": imputer_report,
             "warnings": warnings,
@@ -62,7 +68,11 @@ class ImputationPipeline:
 
         if goal == "inference":
             m = 10 if needs_stronger_mice else 5
-            return "mice", MiceImputer(m=m)
+            return "mice", MiceImputer(
+                vars=self.mice_vars,
+                m=m,
+                beta_vars=self.beta_vars,
+            )
 
         if max_pct < self.low_missing_threshold:
             return "regresion_estocastica", RegresionImputer(
@@ -70,7 +80,11 @@ class ImputationPipeline:
             )
 
         m = 10 if needs_stronger_mice else 5
-        return "mice", MiceImputer(m=m)
+        return "mice", MiceImputer(
+            vars=self.mice_vars,
+            m=m,
+            beta_vars=self.beta_vars,
+        )
 
     def _build_reasoning(
         self,

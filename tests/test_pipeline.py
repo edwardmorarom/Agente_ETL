@@ -9,19 +9,21 @@ import core.pipeline as pipeline_module
 from core.pipeline import ImputationPipeline
 
 
-class FakeDiagnosticoRunner:
-    def run(self, df: pd.DataFrame) -> dict[str, Any]:
-        return {"diagnostico": "ok", "rows": len(df)}
-
-
 class FakeMiceImputer:
     created: list["FakeMiceImputer"] = []
     next_report: dict[str, Any] = {
         "severity": {"lambda": 0.1},
     }
 
-    def __init__(self, m: int = 5) -> None:
+    def __init__(
+        self,
+        vars: list[str] | None = None,
+        m: int = 5,
+        beta_vars: list[str] | None = None,
+    ) -> None:
+        self.vars = vars
         self.m = m
+        self.beta_vars = beta_vars
         self.last_report = self.next_report
         self.fit_called = False
         self.created.append(self)
@@ -50,7 +52,6 @@ def patch_pipeline_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeMiceImputer.next_report = {"severity": {"lambda": 0.1}}
     FakeRegresionImputer.created = []
 
-    monkeypatch.setattr(pipeline_module, "DiagnosticoRunner", FakeDiagnosticoRunner)
     monkeypatch.setattr(pipeline_module, "MiceImputer", FakeMiceImputer)
     monkeypatch.setattr(pipeline_module, "RegresionImputer", FakeRegresionImputer)
 
@@ -76,12 +77,26 @@ def test_inference_with_few_missing_values_uses_mice() -> None:
     assert FakeRegresionImputer.created == []
     assert result["imputer_report"] == {"severity": {"lambda": 0.1}}
     assert result["warnings"] == []
+    assert "diagnostico" not in result
+    assert result["criteria"] == {
+        "max_pct": 4.0,
+        "ratio": 12.5,
+        "goal": "inference",
+    }
+
+
+def test_pipeline_passes_beta_vars_to_mice() -> None:
+    df = make_df(rows=25, cols=2, missing_in_first_col=1)
+
+    ImputationPipeline(beta_vars=["x0"]).run(df, goal="inference")
+
+    assert FakeMiceImputer.created[0].beta_vars == ["x0"]
 
 
 def test_prediction_with_less_than_five_percent_missing_uses_stochastic_regression() -> None:
     df = make_df(rows=25, cols=2, missing_in_first_col=1)
 
-    result = ImputationPipeline().run(df, goal="prediction")
+    result = ImputationPipeline(beta_vars=["x0"]).run(df, goal="prediction")
 
     assert result["decision"] == "regresion_estocastica"
     assert FakeRegresionImputer.created[0].method == "stochastic_regression"
