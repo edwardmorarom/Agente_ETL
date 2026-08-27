@@ -7,9 +7,11 @@ import pandas as pd
 import pytest
 
 from core.ingestion import (
+    build_profile,
     detect_id_columns,
     drop_rows_without_information,
     main,
+    standardize,
 )
 
 
@@ -114,3 +116,13 @@ def test_main_writes_rows_dropped_no_information_to_profile(
         ],
     }
     assert "Se eliminaron 1 filas sin informacion suficiente" in captured.out
+
+
+def test_standardize_preserves_boolean_tokens_recognized_by_inference() -> None:
+    df = pd.DataFrame({"flag": ["si", "no", "verdadero", "falso", "yes"]})
+    profile = build_profile(df)
+
+    standardized = standardize(df, profile)
+
+    assert profile["columns"]["flag"]["inferred_type"] == "boolean"
+    assert standardized["flag"].tolist() == [True, False, True, False, True]

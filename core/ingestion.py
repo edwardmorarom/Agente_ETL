@@ -355,11 +355,24 @@ def standardize(df: pd.DataFrame, profile: dict[str, Any]) -> pd.DataFrame:
             if inferred in ("numeric", "integer"):
                 result[col] = pd.to_numeric(result[col], errors="coerce")
             elif inferred == "boolean":
+                boolean_map = {
+                    "true": True,
+                    "1": True,
+                    "verdadero": True,
+                    "si": True,
+                    "s\u00ed": True,
+                    "yes": True,
+                    "false": False,
+                    "0": False,
+                    "falso": False,
+                    "no": False,
+                }
                 result[col] = (
                     result[col]
                     .astype(str)
                     .str.lower()
-                    .map({"true": True, "1": True, "false": False, "0": False})
+                    .str.strip()
+                    .map(boolean_map)
                 )
             elif inferred == "datetime":
                 import warnings
