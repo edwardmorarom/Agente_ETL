@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from core.report_builder import build_report_json
+from core.report_builder import build_descriptive_summary, build_report_json
 
 
 def sample_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -22,6 +22,7 @@ def sample_inputs() -> tuple[dict[str, Any], dict[str, Any]]:
     pipeline_result = {
         "decision": "mice",
         "reasoning": "Se eligio MICE por inferencia.",
+        "criteria": {"max_pct": 50.0, "ratio": 1.0, "goal": "inference"},
         "imputed_data": pd.DataFrame({"x": ["DATO_SECRETO"], "y": [1.0]}),
         "imputer_report": {
             "case": "multivariate",
@@ -62,6 +63,7 @@ def test_build_report_json_has_expected_structure() -> None:
     assert report["decision"] == {
         "metodo": "mice",
         "razonamiento": "Se eligio MICE por inferencia.",
+        "criterios": {"max_pct": 50.0, "ratio": 1.0, "goal": "inference"},
     }
     assert report["imputacion"] == pipeline_result["imputer_report"]
     assert report["advertencias"] == ["warning de prueba"]
@@ -83,3 +85,76 @@ def test_build_report_json_accepts_output_path_as_string(tmp_path: Path) -> None
 
     assert written["metadata"]["dataset_name"] == "demo"
     assert written["decision"] == report["decision"]
+
+
+def test_build_descriptive_summary_contains_only_aggregated_fields() -> None:
+    df_before = pd.DataFrame(
+        {
+            "x": [10.0, 20.0, None, 40.0],
+            "category": ["a", "b", "c", "d"],
+        }
+    )
+    df_after = pd.DataFrame(
+        {
+            "x": [10.0, 20.0, 30.0, 40.0],
+            "category": ["a", "b", "c", "d"],
+        }
+    )
+
+    summary = build_descriptive_summary(df_before, df_after)
+    expected_fields = {
+        "n",
+        "media",
+        "desviacion_estandar",
+        "minimo",
+        "q1",
+        "mediana",
+        "q3",
+        "maximo",
+    }
+
+    assert set(summary) == {"x"}
+    assert set(summary["x"]["antes"]) == expected_fields
+    assert set(summary["x"]["despues"]) == expected_fields
+    assert "category" not in summary
+    assert "10.0, 20.0" not in str(summary)
+
+
+def test_build_report_json_adds_descriptive_summary_without_rows() -> None:
+    diagnostico, pipeline_result = sample_inputs()
+    df_original = pd.DataFrame({"x": [10.0, None], "label": ["a", "b"]})
+    pipeline_result["imputed_data"] = pd.DataFrame(
+        {"x": [10.0, 20.0], "label": ["a", "b"]}
+    )
+
+    report = build_report_json(
+        diagnostico,
+        pipeline_result,
+        dataset_name="demo",
+        df_original=df_original,
+    )
+
+    assert "resumen_descriptivo" in report
+    assert set(report["resumen_descriptivo"]) == {"x"}
+    assert "label" not in report["resumen_descriptivo"]
+    assert "imputed_data" not in str(report)
+
+
+def test_build_report_json_adds_embedded_comparison_plots() -> None:
+    diagnostico, pipeline_result = sample_inputs()
+    comparison_plots = {
+        "x": {
+            "boxplot": "<div>box</div>",
+            "histograma": "<div>hist</div>",
+            "qqplot": "<div>qq</div>",
+        }
+    }
+
+    report = build_report_json(
+        diagnostico,
+        pipeline_result,
+        dataset_name="demo",
+        comparison_plots=comparison_plots,
+    )
+
+    assert report["exploracion_previa"]["comparison_plots"] == comparison_plots

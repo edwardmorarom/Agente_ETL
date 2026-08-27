@@ -39,15 +39,43 @@ def test_mice_imputer_runs_r_script_and_keeps_report(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    imputer = MiceImputer(vars=["x", "y"], m=2, maxit=3, seed=99)
+    imputer = MiceImputer(vars=["x", "y"], beta_vars=["x"], m=2, maxit=3, seed=99)
     result = imputer.fit_transform(df)
 
     assert seen_command[:2] == ["Rscript", str(imputer.script_path)]
     assert "--output_data" in seen_command
     assert "--output_json" in seen_command
     assert seen_command[seen_command.index("--vars") + 1] == "x,y"
+    assert seen_command[seen_command.index("--beta_vars") + 1] == "x"
     assert imputer.last_report == report
     assert result.isna().sum().sum() == 0
+
+
+def test_mice_imputer_without_beta_vars_keeps_original_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_command: list[str] = []
+
+    def fake_run(
+        command: list[str],
+        check: bool,
+        capture_output: bool,
+        text: bool,
+        encoding: str,
+        errors: str,
+    ) -> subprocess.CompletedProcess[str]:
+        seen_command.extend(command)
+        output_csv = Path(command[command.index("--output_data") + 1])
+        output_json = Path(command[command.index("--output_json") + 1])
+        pd.DataFrame({"x": [1.0, 2.0]}).to_csv(output_csv, index=False)
+        output_json.write_text(json.dumps({"case": "univariate"}), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    MiceImputer(vars=["x"], m=2).fit_transform(pd.DataFrame({"x": [1.0, None]}))
+
+    assert "--beta_vars" not in seen_command
 
 
 def test_mice_imputer_reports_missing_rscript(monkeypatch: pytest.MonkeyPatch) -> None:

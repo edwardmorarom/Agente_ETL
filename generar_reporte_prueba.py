@@ -14,5 +14,6 @@ report = build_report_json(
     pipeline_result=result,
     dataset_name="World Happiness 2023",
     output_path=Path("reporte_consolidado_wh2023.json"),
+    df_original=df,
 )
 print("JSON consolidado guardado en reporte_consolidado_wh2023.json")

@@ -15,6 +15,7 @@ class MiceImputer(BaseImputer):
     def __init__(
         self,
         vars: list[str] | None = None,
+        beta_vars: list[str] | None = None,
         m: int = 5,
         maxit: int = 5,
         seed: int = 123,
@@ -22,6 +23,7 @@ class MiceImputer(BaseImputer):
         script_path: Path | None = None,
     ) -> None:
         self.vars = vars
+        self.beta_vars = beta_vars
         self.m = m
         self.maxit = maxit
         self.seed = seed
@@ -72,6 +74,8 @@ class MiceImputer(BaseImputer):
         ]
         if self.vars:
             command.extend(["--vars", ",".join(self.vars)])
+        if self.beta_vars is not None:
+            command.extend(["--beta_vars", ",".join(self.beta_vars)])
         return command
 
     def _run(self, command: list[str]) -> None:
