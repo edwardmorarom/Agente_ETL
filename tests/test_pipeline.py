@@ -83,6 +83,9 @@ def test_inference_with_few_missing_values_uses_mice() -> None:
         "ratio": 12.5,
         "goal": "inference",
     }
+    assert "Se eligio MICE con m=5" in result["reasoning"]
+    assert "hacer inferencia estadistica" in result["reasoning"]
+    assert "goal=" not in result["reasoning"]
 
 
 def test_pipeline_passes_beta_vars_to_mice() -> None:
@@ -102,6 +105,8 @@ def test_prediction_with_less_than_five_percent_missing_uses_stochastic_regressi
     assert FakeRegresionImputer.created[0].method == "stochastic_regression"
     assert FakeMiceImputer.created == []
     assert result["imputer_report"] is None
+    assert "Se eligio regresion estocastica" in result["reasoning"]
+    assert "goal=" not in result["reasoning"]
 
 
 def test_prediction_with_high_missing_uses_mice_m_10() -> None:
@@ -111,6 +116,7 @@ def test_prediction_with_high_missing_uses_mice_m_10() -> None:
 
     assert result["decision"] == "mice"
     assert FakeMiceImputer.created[0].m == 10
+    assert "m=10 (mayor numero de imputaciones)" in result["reasoning"]
 
 
 def test_prediction_with_intermediate_missing_and_good_ratio_uses_mice_m_5() -> None:

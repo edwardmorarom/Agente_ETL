@@ -1,151 +1,122 @@
-# Agente ETL para imputacion de datos faltantes
+# Agente de Imputacion de Datos Faltantes
 
-Este proyecto implementa un pipeline reproducible para limpiar datos, diagnosticar
-patrones de valores faltantes, elegir un metodo de imputacion y generar un reporte
-interpretativo. La arquitectura separa el nucleo estadistico deterministico de la
-capa opcional de IA: el pipeline puede correr completo sin LLM.
+Este proyecto es un agente estadistico que limpia bases de datos, diagnostica
+patrones de valores faltantes, elige un metodo de imputacion, ejecuta el calculo
+con R y genera un dashboard HTML offline con interpretacion asistida por IA.
 
-## Objetivo
-
-El agente ayuda a responder tres preguntas:
-
-- Que tan grave y estructurado es el problema de datos faltantes.
-- Que metodo de imputacion conviene usar segun el objetivo del analisis.
-- Que implican los resultados, supuestos y advertencias para las conclusiones.
-
-## Estructura del proyecto
-
-- `core/ingestion.py`: carga archivos `csv`, `json`, `xlsx`, `sav`, `dta` y
-  `parquet`; estandariza valores faltantes y tipos; detecta columnas ID; elimina
-  filas sin informacion suficiente; genera perfil JSON.
-- `core/pipeline.py`: orquesta la decision entre MICE y regresion estocastica
-  usando porcentaje maximo de faltantes, ratio filas/columnas y objetivo
-  (`inference` o `prediction`).
-- `core/comparison_plots.py`: genera graficos interactivos Plotly antes/despues
-  de imputar: boxplot, histograma y QQ-plot embebibles en HTML.
-- `core/report_builder.py`: consolida diagnostico, decision, imputacion,
-  advertencias, resumen descriptivo y graficos comparativos en un reporte JSON.
-- `imputers/base.py`: contrato base de imputadores y errores controlados de
-  ejecucion.
-- `imputers/mice_imputer.py`: wrapper Python sobre `r_scripts/mice_imputer.R`.
-  Ejecuta MICE via `Rscript`, guarda datos imputados y reporte de Rubin.
-- `imputers/regresion_imputer.py`: wrapper Python sobre
-  `r_scripts/regresion_imputer.R` para imputacion por regresion estocastica.
-- `imputers/diagnostico_runner.py`: ejecuta `r_scripts/diagnostico.R`, copia PNGs
-  de diagnostico a una carpeta persistente y devuelve el JSON estadistico.
-- `r_scripts/diagnostico.R`: diagnostico de faltantes con `md.pattern`, resumenes
-  de faltantes, test de Little, EM y graficos de diagnostico.
-- `r_scripts/mice_imputer.R`: imputacion MICE, pooling de Rubin, severidad,
-  validacion de supuestos y ajuste opcional de distribucion Beta con `--beta_vars`.
-- `r_scripts/regresion_imputer.R`: imputacion por regresion estocastica y reporte
-  opcional de supuestos sobre residuos.
-- `llm/client.py`: clientes intercambiables para Gemini, DeepSeek y Ollama, con
-  timeouts, errores explicativos y reintentos en `429`/`503`.
-- `llm/explainer.py`: interpreta el reporte consolidado con reglas anti
-  alucinacion; sanea datos grandes o irrelevantes antes de enviarlos al LLM; puede
-  responder preguntas de seguimiento.
-- `scripts/run_pipeline.py`: CLI principal. Ejecuta ingestion, diagnostico,
-  imputacion, graficos comparativos, reporte JSON, explicacion IA opcional y
-  dashboard HTML.
-- `scripts/generate_html_report.py`: construye el dashboard HTML interactivo,
-  incluyendo interpretacion IA por seccion, graficos Plotly y formulas KaTeX.
-- `assets/katex/`: recursos locales para renderizar notacion matematica en el
-  reporte HTML sin depender de CDN.
-- `tests/`: pruebas unitarias e integracion real con R/Ollama cuando estan
-  disponibles.
+El nucleo del pipeline funciona sin IA. La capa LLM se usa para explicar los
+resultados en lenguaje claro y responder preguntas de seguimiento.
 
 ## Requisitos
 
-Instala dependencias de Python:
+- Python 3.12.
+- R instalado y disponible en terminal como `Rscript`.
+- Paquetes principales de R: `mice`, `naniar`, `VIM`, `kSamples`, `nortest`,
+  `lmtest`, `MASS` y `mvnmle`.
+- Una opcion de IA:
+  - Ollama local.
+  - API key de Gemini.
+  - API key de DeepSeek.
+
+## Instalacion rapida
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-Tambien necesitas R con los paquetes usados por los scripts en `r_scripts/`,
-incluyendo `mice`, `naniar`, `VIM`, `DataExplorer`, `inspectdf`, `dlookr`,
-`mvnmle`, `optparse`, `kSamples`, `nortest`, `lmtest` y `MASS`.
+Luego abre `.env` y configura el proveedor de IA que quieras usar. Si vas a
+correr sin IA, puedes usar `--skip_ai`.
 
-## Configuracion de IA
+## Uso basico - modo conversacional recomendado
 
-Copia `.env.example` a `.env` y configura el proveedor deseado:
+Comando minimo:
+
+```powershell
+python -m scripts.run_pipeline --input tu_archivo.xlsx
+```
+
+El agente te preguntara lo demas en lenguaje simple: de que se tratan los datos,
+si buscas conclusiones estadisticas confiables o solo completar el archivo, y si
+aplica algun analisis Beta. No necesitas conocer de antemano todos los parametros
+estadisticos para empezar.
+
+## Uso avanzado - argumentos directos
+
+Argumentos disponibles:
+
+- `--input`: ruta del archivo de entrada. Obligatorio.
+- `--goal`: objetivo del analisis. Usa `inference` para conclusiones
+  estadisticas o `prediction` para completar datos rapidamente.
+- `--domain_context`: descripcion breve del dataset para mejorar la
+  interpretacion IA.
+- `--vars`: columnas separadas por coma para el pooling MICE.
+- `--beta_vars`: columnas separadas por coma para ajustar distribucion Beta.
+- `--dataset_name`: nombre usado para la carpeta de salida.
+- `--skip_ai`: omite la interpretacion con IA.
+- `--no_auto_retry`: desactiva el reintento automatico cuando MICE detecta
+  severidad alta.
+- `--no_interactive`: no hace preguntas por consola; usa defaults seguros para
+  lo que falte.
+
+Ejemplo completo:
+
+```powershell
+python -m scripts.run_pipeline `
+  --input "WH2023.xlsx" `
+  --goal inference `
+  --dataset_name WH2023 `
+  --domain_context "Datos del World Happiness Report 2023 por pais." `
+  --vars "Ladder,LGDP,Social_support" `
+  --beta_vars "Ladder" `
+  --no_auto_retry
+```
+
+## Que hace el pipeline
+
+1. Limpia y estandariza los datos.
+2. Diagnostica el patron de faltantes.
+3. Decide el metodo de imputacion.
+4. Imputa e informa supuestos.
+5. Genera interpretacion con IA si esta habilitada.
+6. Arma el dashboard HTML offline.
+
+## Configurar el proveedor de IA
+
+El proveedor se controla con `LLM_PROVIDER` en `.env`.
+
+- `LLM_PROVIDER=ollama`: usa Ollama local. Es gratis y privado, pero suele ser
+  mas lento y menos preciso que servicios externos.
+- `LLM_PROVIDER=gemini`: usa la API de Gemini. Puede tener capa gratuita con
+  limites de uso.
+- `LLM_PROVIDER=deepseek`: usa la API de DeepSeek. Es de pago, con buen balance
+  entre costo y calidad.
+
+Variables comunes en `.env.example`:
 
 ```env
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.1:8b
-OLLAMA_TIMEOUT_SECONDS=300
+GEMINI_MODEL=gemini-3.6-flash
+DEEPSEEK_MODEL=deepseek-chat
 ```
 
-Tambien se soportan Gemini y DeepSeek mediante variables de entorno. No guardes
-claves reales fuera de `.env`; este archivo esta ignorado por Git.
+## Resultados
 
-## Uso principal
+Cada corrida crea una carpeta nueva:
 
-Ejecutar el pipeline con IA:
-
-```powershell
-python scripts/run_pipeline.py --input "WH2023.xlsx" --goal inference --dataset_name WH2023 --domain_context "Datos del World Happiness Report 2023 con indicadores sociales y economicos por pais."
+```text
+outputs/<nombre>_<fecha>/
 ```
 
-Ejecutar sin IA:
+Dentro encontraras:
 
-```powershell
-python scripts/run_pipeline.py --input "WH2023.xlsx" --goal inference --dataset_name WH2023 --skip_ai
-```
-
-Seleccionar variables para pooling MICE:
-
-```powershell
-python scripts/run_pipeline.py --input "WH2023.xlsx" --goal inference --dataset_name WH2023 --vars "Ladder,LGDP,Social_support"
-```
-
-Ajustar distribucion Beta para variables proporcionales o porcentuales:
-
-```powershell
-python scripts/run_pipeline.py --input "CoreHouseholdIndicators.xlsx" --goal inference --dataset_name CoreHouse --vars "Ind_Mobile" --beta_vars "Ind_Mobile"
-```
-
-Los resultados quedan en `outputs/<dataset>_<timestamp>/`:
-
-- `datos_limpios.csv`
-- `perfil.json`
-- `datos_imputados.csv`
-- `reporte.json`
-- `reporte.html`
-- `plots/`
-
-## Decision automatica del metodo
-
-- `goal="inference"`: siempre usa MICE. Si hay muchos faltantes o bajo ratio
-  filas/columnas, usa mas imputaciones.
-- `goal="prediction"`: con pocos faltantes usa regresion estocastica; con faltantes
-  moderados o altos usa MICE.
-
-El reporte registra los criterios usados (`max_pct`, `ratio`, `goal`) para que la
-decision sea auditable.
-
-## Reporte HTML
-
-El dashboard incluye:
-
-- interpretacion IA general y notas por seccion;
-- exploracion previa de faltantes;
-- graficos de diagnostico;
-- resumen descriptivo antes/despues;
-- decision del metodo;
-- resultados de imputacion y severidad;
-- ajuste Beta opcional;
-- cumplimiento de supuestos;
-- advertencias.
-
-## Pruebas
-
-Ejecuta la suite completa:
-
-```powershell
-python -m pytest -q
-```
-
-Algunos tests de integracion se saltan automaticamente si `Rscript` u Ollama no
-estan disponibles.
+- `datos_limpios.csv`: datos estandarizados antes de imputar.
+- `datos_imputados.csv`: datos finales despues de imputar.
+- `perfil.json`: perfil de ingesta y filas eliminadas por falta de informacion.
+- `reporte.json`: reporte consolidado para lectura y auditoria.
+- `reporte.html`: dashboard HTML offline.
+- `plots/`: graficos de diagnostico generados por R.

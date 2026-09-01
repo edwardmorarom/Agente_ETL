@@ -162,6 +162,7 @@ class DeepSeekClient(LLMClient):
         payload = {
             "model": self.model,
             "messages": messages,
+            "thinking": {"type": "disabled"},
         }
         if generation_options is not None:
             if "temperature" in generation_options:

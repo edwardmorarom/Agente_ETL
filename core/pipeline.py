@@ -93,9 +93,41 @@ class ImputationPipeline:
         ratio: float,
         goal: Literal["inference", "prediction"],
     ) -> str:
+        goal_text = (
+            "hacer inferencia estadistica"
+            if goal == "inference"
+            else "obtener un valor predictivo rapido"
+        )
+
+        if decision == "regresion_estocastica":
+            return (
+                "Se eligio regresion estocastica porque la variable con mas "
+                f"datos faltantes tiene solo {max_pct:.1f}% de valores vacios, "
+                "un nivel bajo donde la perdida de informacion es minima y no "
+                "justifica el costo computacional de metodos mas complejos."
+            )
+
+        needs_stronger_mice = (
+            max_pct >= self.high_missing_threshold
+            or ratio <= self.low_ratio_threshold
+        )
+        m_text = (
+            "m=10 (mayor numero de imputaciones)"
+            if needs_stronger_mice
+            else "m=5"
+        )
+        razon_intensidad = (
+            f"ya que el {max_pct:.1f}% de faltantes en la peor variable supera "
+            f"el {self.high_missing_threshold:.0f}% o hay pocas observaciones "
+            f"por variable (ratio={ratio:.1f})"
+            if needs_stronger_mice
+            else f"dado un nivel moderado de {max_pct:.1f}% de faltantes y "
+            f"suficientes observaciones por variable (ratio={ratio:.1f})"
+        )
         return (
-            f"Se eligio {decision} con goal={goal}, "
-            f"max_pct={max_pct:.2f} y ratio={ratio:.2f}."
+            f"Se eligio MICE con {m_text} para {goal_text}, {razon_intensidad}. "
+            "MICE permite capturar la incertidumbre de la imputacion mediante "
+            "las Reglas de Rubin, algo que un metodo simple no ofrece."
         )
 
     def _build_lambda_warnings(self, report: dict[str, Any] | None) -> list[str]:

@@ -188,6 +188,7 @@ def test_deepseek_client_maps_generation_options(monkeypatch: pytest.MonkeyPatch
 
     assert seen["json"]["temperature"] == 0.4
     assert seen["json"]["max_tokens"] == 350
+    assert seen["json"]["thinking"] == {"type": "disabled"}
 
 
 def test_ollama_client_uses_environment(monkeypatch: pytest.MonkeyPatch) -> None:

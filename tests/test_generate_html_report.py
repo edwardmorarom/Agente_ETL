@@ -98,7 +98,10 @@ def sample_report() -> dict[str, Any]:
             "decision": "Nota IA decision.",
             "imputacion": "Nota IA imputacion.",
             "supuestos": "Nota IA supuestos.",
-            "advertencias": "Nota IA advertencias.",
+            "advertencias_y_sugerencias": {
+                "resumen": "Nota IA advertencias.",
+                "acciones_sugeridas": ["Proceder con confianza."],
+            },
         },
     }
 
@@ -127,6 +130,9 @@ def test_html_contains_variable_selector_and_scrollable_table(tmp_path: Path) ->
     assert '<img src="data:image/png;base64' not in html
     assert "Point Estimate" in html
     assert "Severidad" in html
+    assert "Advertencias y Sugerencias" in html
+    assert "decision-reasoning" in html
+    assert "decision-note" not in html
     assert "Ajuste Beta" in html
     assert "\\alpha = 2.1" in html
     assert "\\beta = 3.2" in html
@@ -139,9 +145,28 @@ def test_html_contains_variable_selector_and_scrollable_table(tmp_path: Path) ->
     assert "Nota IA imputacion." in html
     assert "Nota IA supuestos." in html
     assert "Nota IA advertencias." in html
+    assert "<li>Proceder con confianza.</li>" in html
     assert html.count('class="ai-note"') == 6
     assert html.index('href="#interpretacion"') < html.index('href="#exploracion"')
     assert html.index('id="interpretacion"') < html.index('id="exploracion"')
+
+
+def test_html_renders_ai_imputation_note_inside_imputation_section(tmp_path: Path) -> None:
+    report = sample_report()
+    report["interpretacion_ia"]["imputacion"] = "Interpretacion IA especifica de imputacion."
+    report_json = tmp_path / "report.json"
+    output_html = tmp_path / "report.html"
+    report_json.write_text(json.dumps(report), encoding="utf-8")
+
+    generate_html(report_json, output_html)
+    html = output_html.read_text(encoding="utf-8")
+
+    start = html.index('<section id="imputacion"')
+    end = html.index('<section id="beta-fit"', start)
+    imputation_section = html[start:end]
+
+    assert "Interpretacion IA especifica de imputacion." in imputation_section
+    assert 'class="ai-note"' in imputation_section
 
 
 def test_html_shows_ai_interpretation_fallback(tmp_path: Path) -> None:

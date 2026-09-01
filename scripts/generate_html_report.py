@@ -312,13 +312,11 @@ def _render_dashboard(report: dict[str, Any]) -> str:
       color: #172554;
       font-weight: 800;
     }}
-    .decision-note {{
+    .decision-reasoning {{
       margin: 0;
-      padding: 14px 16px;
-      background: #f8fafc;
-      border-left: 4px solid var(--blue);
-      border-radius: 8px;
       color: #344054;
+      font-size: 16px;
+      line-height: 1.65;
     }}
     .lead {{ font-size: 18px; color: var(--muted); }}
     .muted {{ color: var(--muted); }}
@@ -347,7 +345,7 @@ def _render_dashboard(report: dict[str, Any]) -> str:
     <a href="#imputacion">Imputación</a>
     {'<a href="#beta-fit">Ajuste Beta</a>' if beta_section else ''}
     <a href="#supuestos">Supuestos</a>
-    <a href="#advertencias">Advertencias</a>
+    <a href="#advertencias">Advertencias y Sugerencias</a>
   </nav>
   <main>
     {_section_interpretation(report)}
@@ -528,7 +526,7 @@ def _section_decision(
         f'{_stat_pill("Ratio filas/columnas", criteria.get("ratio"))}'
         f'{_stat_pill("Objetivo del análisis", goal_label)}'
         "</div>"
-        f'<p class="decision-note">{_escape(decision.get("razonamiento", "No aplica"))}</p>'
+        f'<p class="decision-reasoning">{_escape(decision.get("razonamiento", "No aplica"))}</p>'
         f'</div>{_ai_note(interpretation, "decision")}</section>'
     )
 
@@ -668,8 +666,8 @@ def _section_warnings(
     else:
         content = "<ul>" + "".join(f"<li>{_escape(warning)}</li>" for warning in warnings) + "</ul>"
     return (
-        '<section id="advertencias"><h2>Advertencias</h2>'
-        f'{content}{_ai_note(interpretation, "advertencias")}</section>'
+        '<section id="advertencias"><h2>Advertencias y Sugerencias</h2>'
+        f'{content}{_ai_note(interpretation, "advertencias_y_sugerencias")}</section>'
     )
 
 
@@ -679,6 +677,26 @@ def _ai_note(interpretation: Any, key: str) -> str:
     value = interpretation.get(key)
     if value is None or not str(value).strip():
         return ""
+    if key == "advertencias_y_sugerencias" and isinstance(value, dict):
+        resumen = value.get("resumen")
+        acciones = value.get("acciones_sugeridas")
+        parts = []
+        if resumen is not None and str(resumen).strip():
+            parts.append(f"<p>{_escape(resumen)}</p>")
+        if isinstance(acciones, list) and acciones:
+            items = "".join(
+                f"<li>{_escape(action)}</li>"
+                for action in acciones
+                if str(action).strip()
+            )
+            if items:
+                parts.append(f"<ul>{items}</ul>")
+        if not parts:
+            return ""
+        return (
+            '<div class="ai-note"><strong>Interpretacion:</strong> '
+            f"{''.join(parts)}</div>"
+        )
     return (
         '<div class="ai-note"><strong>Interpretacion:</strong> '
         f'{_escape(value)}</div>'
